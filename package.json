@@ -1,0 +1,14 @@
+{
+  "name": "bettacare-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "BettaCare fish health classifier mobile application and backend",
+  "scripts": {
+    "start": "npm --prefix app start",
+    "start:lan": "npm --prefix app run start:lan",
+    "start:tunnel": "npm --prefix app run start:tunnel",
+    "start:clear": "npm --prefix app run start:clear",
+    "doctor": "npm --prefix app run doctor",
+    "test": "npm --prefix app test"
+  }
+}

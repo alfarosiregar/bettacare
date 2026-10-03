@@ -1,0 +1,25 @@
+services:
+  backend:
+    build: ./backend
+    container_name: betta-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      # Override di sini jika perlu (nilai dari backend/.env tetap terbaca)
+      LOG_LEVEL: INFO
+    volumes:
+      # Model & embedding dikeluarkan dari image agar bisa di-update tanpa rebuild
+      - ./backend/betta_model.h5:/app/betta_model.h5:ro
+      - ./backend/fish_reference_emb.npy:/app/fish_reference_emb.npy:ro
+      # Peta kelas hewan ImageNet di-mount agar perbaikan mapping
+      # tidak perlu rebuild image (cukup edit file lalu restart)
+      - ./backend/imagenet_animal.json:/app/imagenet_animal.json:ro
+    restart: always
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

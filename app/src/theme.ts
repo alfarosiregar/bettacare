@@ -1,0 +1,32 @@
+export const theme = {
+  light: {
+    background: '#F8FAFC',
+    card: '#FFFFFF',
+    text: '#0F172A',
+    textMuted: '#64748B',
+    primary: '#14B8A6',
+    primaryMuted: 'rgba(20, 184, 166, 0.15)',
+    danger: '#E11D48',
+    dangerMuted: 'rgba(225, 29, 72, 0.15)',
+    border: '#E2E8F0',
+    tabBar: '#FFFFFF',
+    iconDefault: '#94A3B8',
+    shadowColor: '#000000',
+    headerBackground: '#FFFFFF',
+  },
+  dark: {
+    background: '#0B132B',
+    card: 'rgba(255, 255, 255, 0.035)',
+    text: '#F8FAFC',
+    textMuted: '#94A3B8',
+    primary: '#14B8A6',
+    primaryMuted: 'rgba(20, 184, 166, 0.15)',
+    danger: '#E11D48',
+    dangerMuted: 'rgba(225, 29, 72, 0.15)',
+    border: 'rgba(255, 255, 255, 0.08)',
+    tabBar: '#0B132B',
+    iconDefault: '#64748B',
+    shadowColor: '#000000',
+    headerBackground: '#0B132B',
+  }
+};

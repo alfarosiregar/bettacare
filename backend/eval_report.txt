@@ -1,0 +1,14 @@
+Confusion Matrix (baris=label asli [0=TIDAK_SEHAT, 1=SEHAT]):
+[[ 4  3]
+ [ 2 25]]
+
+              precision    recall  f1-score   support
+
+ TIDAK_SEHAT     0.6667    0.5714    0.6154         7
+       SEHAT     0.8929    0.9259    0.9091        27
+
+    accuracy                         0.8529        34
+   macro avg     0.7798    0.7487    0.7622        34
+weighted avg     0.8463    0.8529    0.8486        34
+
+Accuracy: 85.29%
