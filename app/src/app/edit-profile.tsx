@@ -134,7 +134,7 @@ export default function EditProfileScreen() {
             <MaterialCommunityIcons name="account-circle-outline" size={20} color={colors.textMuted} style={styles.inputIcon} />
             <TextInput
               style={[styles.input, { color: colors.textMuted }]}
-              value={user?.name || ''}
+              value={user?.username || user?.name || ''}
               editable={false}
             />
           </View>

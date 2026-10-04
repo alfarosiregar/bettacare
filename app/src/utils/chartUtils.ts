@@ -21,11 +21,13 @@ export function getWeeklyChartData(historyData: any[]) {
   const safeHistory = Array.isArray(historyData) ? historyData : [];
   safeHistory.forEach(item => {
     let d = new Date();
-    if (item.date.startsWith('Hari ini')) {
+    if (item.createdAt) {
+      d = new Date(item.createdAt);
+    } else if (item.date && item.date.startsWith('Hari ini')) {
       d = new Date();
-    } else if (item.date.startsWith('Kemarin')) {
+    } else if (item.date && item.date.startsWith('Kemarin')) {
       d.setDate(d.getDate() - 1);
-    } else {
+    } else if (item.date) {
       const datePart = item.date.split(',')[0]; 
       d = new Date(datePart);
     }

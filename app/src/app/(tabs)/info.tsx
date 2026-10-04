@@ -41,7 +41,7 @@ export default function InfoScreen() {
       <FadeInView delay={0}>
         <View style={styles.header}>
           <Text style={[styles.title, { color: colors.text }]}>Edukasi & Informasi</Text>
-          <Text style={[styles.subtitle, { color: colors.textMuted }]}>Pelajari lebih lanjut tentang ikan cupang dan teknologi kami.</Text>
+          <Text style={[styles.subtitle, { color: colors.textMuted }]}>Pelajari lebih lanjut tentang ikan cupang dan teknologi yang digunakan.</Text>
         </View>
       </FadeInView>
 
@@ -63,7 +63,7 @@ export default function InfoScreen() {
 
         {/* ── HOW IT WORKS ── */}
         <FadeInView delay={200}>
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>Cara Kerja Teknologi Kami</Text>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>Cara Kerja Teknologi</Text>
           
           <FeatureCard
           icon="brain"
@@ -95,7 +95,7 @@ export default function InfoScreen() {
           <View style={styles.footer}>
           <MaterialCommunityIcons name="shield-check" size={24} color={colors.textMuted} />
           <Text style={[styles.footerText, { color: colors.textMuted }]}>
-            Proyek Skripsi — Klasifikasi Kesehatan Ikan Cupang
+            BettaCare - Proyek Skripsi
           </Text>
         </View>
         </FadeInView>

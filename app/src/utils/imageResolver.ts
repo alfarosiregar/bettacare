@@ -59,3 +59,44 @@ export const resolveImage = (imageOrPath: any) => {
   // Bentuk lain (mis. { uri }) → teruskan apa adanya.
   return imageOrPath;
 };
+
+export function getResolvedSource(imageOrObj: any): any {
+  if (imageOrObj === null || imageOrObj === undefined) return null;
+
+  let raw = imageOrObj;
+  if (typeof imageOrObj === 'object' && imageOrObj !== null) {
+    if (imageOrObj.uri !== undefined) {
+      raw = imageOrObj.uri;
+    } else {
+      return imageOrObj;
+    }
+  }
+
+  if (typeof raw === 'number') {
+    return raw;
+  }
+
+  if (typeof raw === 'string') {
+    if (raw.length === 0) return null;
+
+    // file:// URI
+    if (raw.startsWith('file://')) {
+      return { uri: raw };
+    }
+
+    // http(s):// or data: URI
+    if (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('data:')) {
+      return { uri: raw };
+    }
+
+    // Raw base64 tanpa prefix data:image/...
+    if (raw.startsWith('/9j/') || raw.startsWith('iVBORw') || (raw.length > 100 && !raw.includes(' '))) {
+      return { uri: `data:image/jpeg;base64,${raw}` };
+    }
+
+    // Asset key bernama (seperti 'healthy_halfmoon', dsb.)
+    return resolveImage(raw);
+  }
+
+  return resolveImage(raw);
+}

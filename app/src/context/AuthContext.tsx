@@ -8,6 +8,7 @@ import {
   signOut as firebaseSignOut,
   updatePassword,
   sendPasswordResetEmail,
+  updateProfile as firebaseUpdateProfile,
   User as FirebaseUser
 } from 'firebase/auth';
 import { ref, get, set, update } from 'firebase/database';
@@ -15,7 +16,8 @@ import { Alert } from 'react-native';
 
 type User = {
   uid: string;
-  name: string;
+  username: string;
+  name?: string;
   fullname?: string;
   firstname?: string;
   lastname?: string;
@@ -56,6 +58,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
+  const isRegisteringRef = React.useRef(false);
 
   useEffect(() => {
     if (!isFirebaseConfigured) {
@@ -66,6 +69,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // Dengarkan perubahan status login dari Firebase
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: FirebaseUser | null) => {
+      // Jika sedang dalam proses pendaftaran, abaikan event auth sementara
+      if (isRegisteringRef.current) {
+        return;
+      }
+
       if (firebaseUser) {
         try {
           // Ambil data profil dari Realtime Database
@@ -74,24 +82,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           
           if (userDoc.exists()) {
             const data = userDoc.val();
+            const uname = data.username || data.name || firebaseUser.displayName || 'Pengguna';
             setUser({
               uid: firebaseUser.uid,
-              name: data.name || 'Pengguna',
-              fullname: data.fullname || data.name || 'Pengguna',
+              username: uname,
+              name: uname,
+              fullname: data.fullname || firebaseUser.displayName || uname || 'Pengguna',
               firstname: data.firstname || '',
               lastname: data.lastname || '',
               email: firebaseUser.email || '',
               photoURL: data.photoURL || '',
               themePreference: data.themePreference || 'light',
             });
+
+            // Sinkronkan username ke usernames/ agar akun lama juga bisa login pakai username
+            const syncUname = data.username || data.name;
+            if (syncUname && firebaseUser.email) {
+              const cleanUname = String(syncUname).trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+              if (cleanUname) {
+                set(ref(db, `usernames/${cleanUname}`), firebaseUser.email.toLowerCase()).catch(() => {});
+              }
+            }
           } else {
+            // Jika sedang dalam proses register, jangan buat profil default
+            if (isRegisteringRef.current) return;
+
             // Dokumen profil belum ada (mis. akun dibuat saat rules masih
             // terkunci) -> buat otomatis (self-heal) dengan data dasar.
+            const displayName = firebaseUser.displayName || 'Pengguna';
             const defaultProfile = {
-              name: 'Pengguna',
+              username: displayName,
+              name: displayName,
               firstname: '',
               lastname: '',
-              fullname: 'Pengguna',
+              fullname: displayName,
               email: firebaseUser.email || '',
               createdAt: new Date().toISOString(),
             };
@@ -102,8 +126,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             }
             setUser({
               uid: firebaseUser.uid,
-              name: 'Pengguna',
-              fullname: 'Pengguna',
+              username: displayName,
+              name: displayName,
+              fullname: displayName,
               firstname: '',
               lastname: '',
               email: firebaseUser.email || '',
@@ -124,6 +149,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
           setUser({
             uid: firebaseUser.uid,
+            username: 'Pengguna',
             name: 'Pengguna',
             fullname: 'Pengguna',
             firstname: '',
@@ -142,24 +168,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return unsubscribe;
   }, []);
 
-  const login = async (email: string, pass: string) => {
+  const login = async (identifier: string, pass: string) => {
     if (!isFirebaseConfigured) {
       Alert.alert("Firebase Belum Dikonfigurasi", "Silakan masukkan kunci API Firebase Anda di file config/firebase.ts terlebih dahulu.");
       return;
     }
     try {
       setIsLoading(true);
-      await signInWithEmailAndPassword(auth, email, pass);
+      let emailToUse = identifier.trim().toLowerCase();
+      const isEmail = emailToUse.includes('@');
+
+      // Jika input bukan format email, cari email berdasarkan username di Realtime Database
+      if (!isEmail) {
+        const cleanUsername = emailToUse.replace(/[^a-z0-9_]/g, '');
+        try {
+          const usernameSnap = await get(ref(db, `usernames/${cleanUsername}`));
+          if (usernameSnap.exists()) {
+            emailToUse = String(usernameSnap.val()).trim().toLowerCase();
+          } else {
+            // Fallback untuk akun lama
+            emailToUse = `${cleanUsername}@bettacare.local`;
+          }
+        } catch (_) {
+          emailToUse = `${cleanUsername}@bettacare.local`;
+        }
+      }
+
+      await signInWithEmailAndPassword(auth, emailToUse, pass);
+      setIsLoading(false);
     } catch (error: any) {
       setIsLoading(false);
       
       let customMessage = "Terjadi kesalahan saat masuk. Silakan coba lagi.";
       if (error.code === 'auth/user-not-found') {
-        customMessage = "Username tidak ditemukan";
+        customMessage = "Akun tidak ditemukan. Periksa kembali username atau email Anda.";
       } else if (error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
-        customMessage = "Username tidak ditemukan atau Password Salah";
+        customMessage = "Username/Email atau Kata Sandi salah.";
       } else if (error.code === 'auth/invalid-email') {
-        customMessage = "Format Username tidak valid";
+        customMessage = "Format Email atau Username tidak valid.";
       } else if (error.code === 'auth/too-many-requests') {
         customMessage = "Terlalu banyak percobaan masuk. Silakan coba beberapa saat lagi.";
       } else if (error.code === 'auth/network-request-failed') {
@@ -173,27 +219,96 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const register = async (firstname: string, lastname: string, username: string, email: string, pass: string) => {
     if (!isFirebaseConfigured) {
       Alert.alert("Firebase Belum Dikonfigurasi", "Silakan masukkan kunci API Firebase Anda di file config/firebase.ts terlebih dahulu.");
-      return;
+      return "Firebase Belum Dikonfigurasi.";
     }
+    const cleanUsername = username.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
     try {
       setIsLoading(true);
-      const userCredential = await createUserWithEmailAndPassword(auth, email, pass);
+      isRegisteringRef.current = true;
+
+      // Cek apakah username sudah dipakai oleh pengguna lain
+      if (cleanUsername) {
+        try {
+          const usernameCheck = await get(ref(db, `usernames/${cleanUsername}`));
+          if (usernameCheck.exists()) {
+            const mappedEmail = String(usernameCheck.val()).trim().toLowerCase();
+            // Jika username tersebut sudah terdaftar untuk email yang BERBEDA, tolak
+            if (mappedEmail && mappedEmail !== email.trim().toLowerCase()) {
+              isRegisteringRef.current = false;
+              setIsLoading(false);
+              return "Username sudah digunakan oleh akun lain. Silakan pilih username lain.";
+            }
+          }
+        } catch (_) {
+          // Lewatkan jika rules belum mengizinkan read public
+        }
+      }
+
+      const userCredential = await createUserWithEmailAndPassword(auth, email.trim().toLowerCase(), pass);
       const newFirebaseUser = userCredential.user;
 
-      const fullname = lastname ? `${firstname} ${lastname}` : firstname;
+      const trimmedFirstname = firstname.trim();
+      const trimmedLastname = lastname.trim();
+      const fullname = trimmedLastname ? `${trimmedFirstname} ${trimmedLastname}` : trimmedFirstname;
+      
+      // 1. Simpan display name ke Firebase Auth user
+      try {
+        await firebaseUpdateProfile(newFirebaseUser, {
+          displayName: fullname,
+        });
+      } catch (profileErr) {
+        console.warn('Gagal update displayName di Firebase Auth:', profileErr);
+      }
+
+      // 2. Simpan data profil pengguna ke users/$uid di Realtime Database
       await set(ref(db, 'users/' + newFirebaseUser.uid), {
-        name: username,
-        firstname: firstname,
-        lastname: lastname,
+        username: username.trim(),
+        name: username.trim(),
+        firstname: trimmedFirstname,
+        lastname: trimmedLastname,
         fullname: fullname,
-        email: email,
+        email: email.trim().toLowerCase(),
         createdAt: new Date().toISOString()
       });
 
-      // State user akan di-update otomatis oleh onAuthStateChanged
-    } catch (error: any) {
+      // 3. Simpan mapping username -> email untuk fitur login dengan username
+      if (cleanUsername) {
+        try {
+          await set(ref(db, `usernames/${cleanUsername}`), email.trim().toLowerCase());
+        } catch (usernameErr) {
+          console.warn("Gagal menyimpan mapping username (pastikan rules di Firebase Console sudah dipublikasikan):", usernameErr);
+        }
+      }
+
+      // 4. Sign out segera agar tidak otomatis masuk (auto-redirect) ke dashboard
+      // Pengguna diarahkan untuk login secara sengaja menggunakan akun baru
+      await firebaseSignOut(auth);
+      setUser(null);
+      isRegisteringRef.current = false;
       setIsLoading(false);
-      return error.message || "Gagal mendaftar.";
+
+      return;
+    } catch (error: any) {
+      isRegisteringRef.current = false;
+      setIsLoading(false);
+      try {
+        await firebaseSignOut(auth);
+      } catch (_) {}
+      setUser(null);
+
+      let customMessage = "Gagal mendaftar. Silakan coba lagi.";
+      if (error.code === 'auth/email-already-in-use') {
+        customMessage = "Email sudah terdaftar. Silakan masuk atau gunakan email lain.";
+      } else if (error.code === 'auth/invalid-email') {
+        customMessage = "Format email tidak valid.";
+      } else if (error.code === 'auth/weak-password') {
+        customMessage = "Kata sandi terlalu lemah. Gunakan minimal 6 karakter.";
+      } else if (error.code === 'auth/network-request-failed') {
+        customMessage = "Koneksi internet bermasalah. Periksa jaringan Anda.";
+      } else if (error.message) {
+        customMessage = error.message;
+      }
+      return customMessage;
     }
   };
 

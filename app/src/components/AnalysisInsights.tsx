@@ -94,11 +94,10 @@ interface FeatureInsight {
  * Nilai mentah ditampilkan pada barisnya sendiri (presisi 2–3 desimal),
  * sehingga narasi tidak perlu mengulang angka.
  */
-const interpretFeatures = (
+const getGlcmInsights = (
   result: string,
-  features: FeatureAnalysis
+  g?: FeatureAnalysis['glcm']
 ): FeatureInsight[] => {
-  const g = features.glcm;
   if (!g) return [];
   const isHealthy = result === 'SEHAT';
   const out: FeatureInsight[] = [];
@@ -130,7 +129,12 @@ const interpretFeatures = (
   // Energi & homogenitas — arah dataset: sehat sedikit lebih tinggi
   const e = g.energy ?? 0;
   const h = g.homogeneity ?? 0;
-  out.push({ label: 'Energi', value: e.toFixed(3), color: '#FBBF24', text: null });
+  out.push({
+    label: 'Energi',
+    value: e.toFixed(3),
+    color: '#FBBF24',
+    text: `Tingkat keteraturan tekstur (${e >= DATASET_MID.energy ? 'tinggi' : 'sedang'}, titik tengah dataset: ${DATASET_MID.energy}).`,
+  });
   out.push({
     label: 'Homogenitas',
     value: h.toFixed(3),
@@ -140,25 +144,45 @@ const interpretFeatures = (
       : `${e < DATASET_MID.energy || h < DATASET_MID.homogeneity ? 'Di bawah' : 'Di sekitar'} titik tengah dataset (${DATASET_MID.energy} / ${DATASET_MID.homogeneity}), kompatibel dengan citra tidak sehat pada dataset.`,
   });
 
-  // Rata-rata RGB — netral, tanpa klaim "memucat = sakit"
-  // (latar akuarium ikut terhitung, sehingga rata-rata global bisa abu-abu
-  // meski ikan sehat — klaim pucat dari rata-rata global terbukti keliru).
-  const rgb = features.rgb_averages;
-  if (rgb?.r !== undefined && rgb?.g !== undefined && rgb?.b !== undefined) {
-    const { r, g: gg, b } = rgb;
-    const dominant =
-      r >= gg && r >= b ? 'merah' : gg >= r && gg >= b ? 'hijau' : 'biru';
-    out.push({
-      label: 'Rata-rata RGB',
-      value: `${r.toFixed(1)}, ${gg.toFixed(1)}, ${b.toFixed(1)}`,
+  return out;
+};
+
+const getRgbInsights = (
+  result: string,
+  rgb?: FeatureAnalysis['rgb_averages']
+): FeatureInsight[] => {
+  if (!rgb || rgb.r === undefined || rgb.g === undefined || rgb.b === undefined) return [];
+  const isHealthy = result === 'SEHAT';
+  const { r, g: gg, b } = rgb;
+  const dominant =
+    r >= gg && r >= b ? 'Merah' : gg >= r && gg >= b ? 'Hijau' : 'Biru';
+
+  return [
+    {
+      label: 'Rata-rata Nilai RGB',
+      value: `R: ${r.toFixed(1)} | G: ${gg.toFixed(1)} | B: ${b.toFixed(1)}`,
       color: '#EF4444',
       text: isHealthy
-        ? `Dominasi kanal ${dominant}, kompatibel dengan warna alami ikan pada dataset sehat.`
-        : `Dominasi kanal ${dominant}; bersama fitur tekstur, kombinasi ini diarahkan model ke vonis tidak sehat.`,
-    });
-  }
+        ? `Dominasi kanal warna ${dominant}, selaras dengan karakteristik pigmen alami ikan cupang pada dataset sehat.`
+        : `Dominasi kanal warna ${dominant}; bersama fitur tekstur GLCM, kombinasi spektrum ini diarahkan model ke kondisi tidak sehat.`,
+    },
+    {
+      label: 'Kanal Warna Dominan',
+      value: `Kanal ${dominant}`,
+      color: dominant === 'Merah' ? '#EF4444' : dominant === 'Hijau' ? '#22C55E' : '#3B82F6',
+      text: `Menunjukkan komponen intensitas warna utama pada area tubuh ikan yang dipindai.`,
+    },
+  ];
+};
 
-  return out;
+const interpretFeatures = (
+  result: string,
+  features: FeatureAnalysis
+): FeatureInsight[] => {
+  return [
+    ...getGlcmInsights(result, features.glcm),
+    ...getRgbInsights(result, features.rgb_averages),
+  ];
 };
 
 /** Rekomendasi tindakan saat TIDAK SEHAT (praktik umum perawatan cupang). */
@@ -361,15 +385,27 @@ export default function AnalysisInsights({
         </View>
       )}
 
-      {/* ── Fitur & Interpretasi (kartu gabungan: nilai mentah + narasi) ── */}
+      {/* ── Fitur & Interpretasi (Terpisah: Tekstur GLCM & Intensitas RGB) ── */}
       {features?.glcm && !isUnknown && (
         <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder }]}>
           <View style={styles.header}>
             <MaterialCommunityIcons name="text-box-search-outline" size={22} color={primary} />
             <Text style={[styles.title, { color: textColor }]}>Fitur & Interpretasi</Text>
           </View>
-          {interpretFeatures(result, features).map((item, i) => (
-            <View key={i} style={styles.insightBlock}>
+
+          {/* Subbagian 1: Fitur Tekstur (GLCM) */}
+          <View style={styles.subSectionHeader}>
+            <View style={[styles.subSectionBadge, { backgroundColor: 'rgba(167, 139, 250, 0.15)' }]}>
+              <MaterialCommunityIcons name="texture" size={16} color="#8B5CF6" />
+              <Text style={[styles.subSectionBadgeText, { color: '#8B5CF6' }]}>Tekstur GLCM</Text>
+            </View>
+            <Text style={[styles.subSectionDesc, { color: textMuted }]}>
+              Analisis matriks derajat keabuan (kontras, keteraturan, dan homogenitas permukaan sisik)
+            </Text>
+          </View>
+
+          {getGlcmInsights(result, features.glcm).map((item, i) => (
+            <View key={`glcm-${i}`} style={styles.insightBlock}>
               <View style={styles.statRow}>
                 <View style={[styles.statDot, { backgroundColor: item.color }]} />
                 <Text style={[styles.statLabel, { color: textColor }]}>{item.label}</Text>
@@ -383,11 +419,45 @@ export default function AnalysisInsights({
               )}
             </View>
           ))}
+
+          {/* Subbagian 2: Fitur Warna (RGB) */}
+          {features.rgb_averages && features.rgb_averages.r !== undefined && (
+            <>
+              <View style={[styles.divider, { backgroundColor: cardBorder }]} />
+              <View style={styles.subSectionHeader}>
+                <View style={[styles.subSectionBadge, { backgroundColor: 'rgba(239, 68, 68, 0.15)' }]}>
+                  <MaterialCommunityIcons name="palette-outline" size={16} color="#EF4444" />
+                  <Text style={[styles.subSectionBadgeText, { color: '#EF4444' }]}>Intensitas Warna RGB</Text>
+                </View>
+                <Text style={[styles.subSectionDesc, { color: textMuted }]}>
+                  Rerata distribusi nilai warna kanal Red, Green, dan Blue pada area tubuh ikan
+                </Text>
+              </View>
+
+              {getRgbInsights(result, features.rgb_averages).map((item, i) => (
+                <View key={`rgb-${i}`} style={styles.insightBlock}>
+                  <View style={styles.statRow}>
+                    <View style={[styles.statDot, { backgroundColor: item.color }]} />
+                    <Text style={[styles.statLabel, { color: textColor }]}>{item.label}</Text>
+                    <Text style={[styles.statValue, { color: textColor }]}>{item.value}</Text>
+                  </View>
+                  {item.text && (
+                    <View style={styles.bulletRow}>
+                      <MaterialCommunityIcons name="chevron-right" size={14} color={textMuted} style={styles.bulletIcon} />
+                      <Text style={[styles.bulletText, { color: textMuted }]}>{item.text}</Text>
+                    </View>
+                  )}
+                </View>
+              ))}
+            </>
+          )}
+
+          <View style={[styles.divider, { backgroundColor: cardBorder }]} />
           <Text style={[styles.noteText, { color: textMuted }]}>
-            Catatan: nilai dibandingkan dengan titik tengah statistik dataset
+            Catatan: Nilai dibandingkan dengan titik tengah statistik dataset
             (n=30 sampel). Rentang antar kelas saling tumpang tindih, sehingga
-            klasifikasi akhir tetap dibuat model dari gabungan seluruh fitur
-            citra + GLCM — bukan dari satu nilai saja.
+            klasifikasi akhir tetap ditentukan model dari gabungan seluruh fitur
+            citra MobileNetV2 + GLCM & RGB — bukan dari satu nilai saja.
           </Text>
         </View>
       )}
@@ -521,5 +591,28 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 1,
     marginVertical: 12,
+  },
+  subSectionHeader: {
+    marginTop: 8,
+    marginBottom: 10,
+  },
+  subSectionBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    marginBottom: 6,
+    gap: 6,
+  },
+  subSectionBadgeText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 12,
+  },
+  subSectionDesc: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 12,
+    lineHeight: 17,
   },
 });

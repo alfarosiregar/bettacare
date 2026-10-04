@@ -1,9 +1,10 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { db, isFirebaseConfigured } from '../config/firebase';
-import { ref, onValue, set, push, remove, query, orderByChild } from 'firebase/database';
+import { ref, onValue, set, push, remove, query, orderByChild, get } from 'firebase/database';
 import { useAuth } from './AuthContext';
 import { HISTORY_DATA as MOCK_HISTORY } from '../constants/historyData';
 import type { HistoryItem, AquariumFish, Task, MaintenanceLog } from '../types/domain';
+import { formatHistoryDate } from '../utils/dateUtils';
 
 interface DatabaseContextProps {
   history: HistoryItem[];
@@ -90,30 +91,68 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
     setIsLoading(true);
 
     let seeded = false; // guard agar seeding tasks hanya berjalan sekali per mount
+    let checkedHistoryMigration = false;
+    let checkedAquariumMigration = false;
+    let checkedTasksMigration = false;
+    let checkedMHistoryMigration = false;
 
-    // 1. Listen to History
-    const historyRef = query(ref(db, `users/${user.uid}/history`), orderByChild('createdAt'));
+    // 1. Listen to History (Root path: history/$uid)
+    const historyRef = query(ref(db, `history/${user.uid}`), orderByChild('createdAt'));
     const unsubHistory = onValue(historyRef, (snapshot) => {
+      if (!snapshot.exists() && !checkedHistoryMigration) {
+        checkedHistoryMigration = true;
+        // Coba migrasi data lama dari users/$uid/history jika ada
+        get(ref(db, `users/${user.uid}/history`))
+          .then((legacySnap) => {
+            if (legacySnap.exists()) {
+              const legacyVal = legacySnap.val();
+              if (legacyVal) {
+                set(ref(db, `history/${user.uid}`), legacyVal)
+                  .then(() => remove(ref(db, `users/${user.uid}/history`)))
+                  .catch((e) => console.warn('Gagal migrasi history:', e));
+              }
+            }
+          })
+          .catch((e) => console.warn('Gagal cek legacy history:', e));
+      } else {
+        checkedHistoryMigration = true;
+      }
+
       const data: HistoryItem[] = [];
       snapshot.forEach((childSnapshot) => {
         const val = childSnapshot.val() as HistoryItem;
-        // Normalisasi image: data lama bisa berisi number hasil require() atau
-        // file:// yang sudah mati — keduanya tidak render, ganti dengan string
-        // kosong agar resolver menentukan placeholder.
         const image = typeof val?.image === 'string' ? val.image : '';
-        data.push({ ...val, image, id: childSnapshot.key as string });
+        const date = formatHistoryDate(val?.createdAt, val?.date);
+        data.push({ ...val, date, image, id: childSnapshot.key as string });
       });
       setHistory(data.reverse()); // RTDB orderByChild ascending by default
     });
 
-    // 2. Listen to Aquarium
-    const aquariumRef = ref(db, `users/${user.uid}/aquarium`);
+    // 2. Listen to Aquarium (Root path: aquarium/$uid)
+    const aquariumRef = ref(db, `aquarium/${user.uid}`);
     const unsubAquarium = onValue(aquariumRef, (snapshot) => {
+      if (!snapshot.exists() && !checkedAquariumMigration) {
+        checkedAquariumMigration = true;
+        // Coba migrasi data lama dari users/$uid/aquarium jika ada
+        get(ref(db, `users/${user.uid}/aquarium`))
+          .then((legacySnap) => {
+            if (legacySnap.exists()) {
+              const legacyVal = legacySnap.val();
+              if (legacyVal) {
+                set(ref(db, `aquarium/${user.uid}`), legacyVal)
+                  .then(() => remove(ref(db, `users/${user.uid}/aquarium`)))
+                  .catch((e) => console.warn('Gagal migrasi aquarium:', e));
+              }
+            }
+          })
+          .catch((e) => console.warn('Gagal cek legacy aquarium:', e));
+      } else {
+        checkedAquariumMigration = true;
+      }
+
       const data: AquariumFish[] = [];
       snapshot.forEach((childSnapshot) => {
         const val = childSnapshot.val() as AquariumFish;
-        // Normalisasi image: data lama bisa berisi number hasil require() atau null
-        // (gagal serialisasi) — ganti dengan fallback gambar default.
         const imageKey = typeof val?.image === 'string' && val.image.length > 0
           ? val.image
           : 'healthy_halfmoon';
@@ -122,8 +161,34 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       setAquarium(data);
     });
 
-    // 3. Listen to Tasks
-    const tasksRef = ref(db, `users/${user.uid}/tasks`);
+    // Helper untuk seeding default tasks
+    const seedDefaultTasks = () => {
+      if (seeded) return;
+      seeded = true;
+      const uid = user.uid;
+      Promise.all(
+        DEFAULT_TASK_TEMPLATES.map((tpl, i) => {
+          const task = { ...tpl, aquariumId: tpl.aquariumId || 'default' };
+          return set(ref(db, `tasks/${uid}/template_${i + 1}`), task);
+        })
+      )
+        .then(() => {
+          setTasks(
+            DEFAULT_TASK_TEMPLATES.map((tpl, i) => ({
+              ...tpl,
+              aquariumId: tpl.aquariumId || 'default',
+              id: `template_${i + 1}`,
+            }))
+          );
+        })
+        .catch((e) => {
+          console.warn('Gagal seeding tasks default:', e);
+          seeded = false;
+        });
+    };
+
+    // 3. Listen to Tasks (Root path: tasks/$uid)
+    const tasksRef = ref(db, `tasks/${user.uid}`);
     const unsubTasks = onValue(tasksRef, (snapshot) => {
       const data: Task[] = [];
       snapshot.forEach((childSnapshot) => {
@@ -131,40 +196,56 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
         data.push({ ...val, id: childSnapshot.key as string });
       });
 
-      // Jika tasks kosong (user baru), seed dengan template default.
       if (data.length === 0) {
-        if (seeded) return; // cegah loop seeding ulang tiap snapshot
-        seeded = true;
-        const uid = user.uid;
-        // Tulis semua seed secara paralel lalu update state dari hasil seed,
-        // agar UI tidak menampilkan daftar kosong sampai snapshot berikutnya.
-        Promise.all(
-          DEFAULT_TASK_TEMPLATES.map((tpl, i) => {
-            const task = { ...tpl, aquariumId: tpl.aquariumId || 'default' };
-            return set(ref(db, `users/${uid}/tasks/template_${i + 1}`), task);
-          })
-        )
-          .then(() => {
-            setTasks(
-              DEFAULT_TASK_TEMPLATES.map((tpl, i) => ({
-                ...tpl,
-                aquariumId: tpl.aquariumId || 'default',
-                id: `template_${i + 1}`,
-              }))
-            );
-          })
-          .catch((e) => {
-            console.warn('Gagal seeding tasks default:', e);
-            seeded = false;
-          });
+        if (!checkedTasksMigration) {
+          checkedTasksMigration = true;
+          // Cek apakah ada data tasks lama di users/$uid/tasks
+          get(ref(db, `users/${user.uid}/tasks`))
+            .then((legacySnap) => {
+              if (legacySnap.exists()) {
+                const legacyVal = legacySnap.val();
+                if (legacyVal) {
+                  set(ref(db, `tasks/${user.uid}`), legacyVal)
+                    .then(() => remove(ref(db, `users/${user.uid}/tasks`)))
+                    .catch((e) => console.warn('Gagal migrasi tasks:', e));
+                  return;
+                }
+              }
+              seedDefaultTasks();
+            })
+            .catch(() => {
+              seedDefaultTasks();
+            });
+        } else {
+          seedDefaultTasks();
+        }
       } else {
+        checkedTasksMigration = true;
         setTasks(data);
       }
     });
 
-    // 4. Listen to Maintenance History
-    const mHistoryRef = query(ref(db, `users/${user.uid}/maintenance_history`), orderByChild('completedAt'));
+    // 4. Listen to Maintenance History (Root path: maintenance_history/$uid)
+    const mHistoryRef = query(ref(db, `maintenance_history/${user.uid}`), orderByChild('completedAt'));
     const unsubMHistory = onValue(mHistoryRef, (snapshot) => {
+      if (!snapshot.exists() && !checkedMHistoryMigration) {
+        checkedMHistoryMigration = true;
+        get(ref(db, `users/${user.uid}/maintenance_history`))
+          .then((legacySnap) => {
+            if (legacySnap.exists()) {
+              const legacyVal = legacySnap.val();
+              if (legacyVal) {
+                set(ref(db, `maintenance_history/${user.uid}`), legacyVal)
+                  .then(() => remove(ref(db, `users/${user.uid}/maintenance_history`)))
+                  .catch((e) => console.warn('Gagal migrasi maintenance_history:', e));
+              }
+            }
+          })
+          .catch((e) => console.warn('Gagal cek legacy maintenance_history:', e));
+      } else {
+        checkedMHistoryMigration = true;
+      }
+
       const data: MaintenanceLog[] = [];
       snapshot.forEach((childSnapshot) => {
         const val = childSnapshot.val() as MaintenanceLog;
@@ -200,16 +281,17 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
 
   // Actions
   const addHistory = async (item: Omit<HistoryItem, 'id'>) => {
+    const createdAt = item.createdAt || new Date().toISOString();
+    const date = item.date && item.date !== 'Hari ini' ? item.date : formatHistoryDate(createdAt);
+    const enrichedItem = { ...item, date, createdAt };
+
     if (!user || !isFirebaseConfigured) {
-      setHistory((prev) => [{ ...(item as HistoryItem), id: Date.now().toString() }, ...prev]);
+      setHistory((prev) => [{ ...(enrichedItem as HistoryItem), id: Date.now().toString() }, ...prev]);
       return;
     }
-    const historyRef = ref(db, `users/${user.uid}/history`);
-    const cleanItem = sanitizeForFirebase(item);
-    await push(historyRef, {
-      ...cleanItem,
-      createdAt: new Date().toISOString()
-    });
+    const historyRef = ref(db, `history/${user.uid}`);
+    const cleanItem = sanitizeForFirebase(enrichedItem);
+    await push(historyRef, cleanItem);
   };
 
   const removeHistory = async (id: string) => {
@@ -217,7 +299,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       setHistory(history.filter(h => h.id !== id));
       return;
     }
-    const historyRef = ref(db, `users/${user.uid}/history/${id}`);
+    const historyRef = ref(db, `history/${user.uid}/${id}`);
     await remove(historyRef);
   };
 
@@ -226,7 +308,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       setMaintenanceHistory(maintenanceHistory.filter(h => h.id !== id));
       return;
     }
-    const mHistoryRef = ref(db, `users/${user.uid}/maintenance_history/${id}`);
+    const mHistoryRef = ref(db, `maintenance_history/${user.uid}/${id}`);
     await remove(mHistoryRef);
   };
 
@@ -242,13 +324,13 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       setTasks((prev) => [...prev, ...newTasks]);
       return;
     }
-    const aquariumRef = ref(db, `users/${user.uid}/aquarium`);
+    const aquariumRef = ref(db, `aquarium/${user.uid}`);
     const newAquariumRef = await push(aquariumRef, fish);
 
     // Create default tasks in Firebase (tunggu semua selesai; id ikan sudah pasti)
     const aquariumId = newAquariumRef.key as string;
     await Promise.all(
-      DEFAULT_TASK_TEMPLATES.map((task) => push(ref(db, `users/${user.uid}/tasks`), { ...task, aquariumId }))
+      DEFAULT_TASK_TEMPLATES.map((task) => push(ref(db, `tasks/${user.uid}`), { ...task, aquariumId }))
     );
   };
 
@@ -257,7 +339,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       setTasks((prev) => [...prev, { ...task, id: `t_${Date.now()}` }]);
       return;
     }
-    await push(ref(db, `users/${user.uid}/tasks`), task);
+    await push(ref(db, `tasks/${user.uid}`), task);
   };
 
   const removeAquariumFish = async (id: string) => {
@@ -267,13 +349,13 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     // Delete fish
-    const fishRef = ref(db, `users/${user.uid}/aquarium/${id}`);
+    const fishRef = ref(db, `aquarium/${user.uid}/${id}`);
     await remove(fishRef);
 
     // Delete associated tasks (paralel)
     const tasksToDelete = tasks.filter(t => t.aquariumId === id);
     await Promise.all(
-      tasksToDelete.map(task => remove(ref(db, `users/${user.uid}/tasks/${task.id}`)))
+      tasksToDelete.map(task => remove(ref(db, `tasks/${user.uid}/${task.id}`)))
     );
   };
 
@@ -282,7 +364,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       setTasks(tasks.filter(t => t.id !== id));
       return;
     }
-    await remove(ref(db, `users/${user.uid}/tasks/${id}`));
+    await remove(ref(db, `tasks/${user.uid}/${id}`));
   };
 
   const updateAquariumName = async (id: string, newName: string) => {
@@ -290,7 +372,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       setAquarium(aquarium.map(a => a.id === id ? { ...a, name: newName } : a));
       return;
     }
-    await set(ref(db, `users/${user.uid}/aquarium/${id}/name`), newName);
+    await set(ref(db, `aquarium/${user.uid}/${id}/name`), newName);
   };
 
   const toggleTask = async (id: string, currentStatus: boolean, taskTitle?: string, aquariumId?: string) => {
@@ -308,7 +390,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
         if (!user || !isFirebaseConfigured) {
           setMaintenanceHistory((prev) => [{ id: Date.now().toString(), ...logItem }, ...prev]);
         } else {
-          await push(ref(db, `users/${user.uid}/maintenance_history`), logItem);
+          await push(ref(db, `maintenance_history/${user.uid}`), logItem);
         }
       }
     };
@@ -319,7 +401,7 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
       await logHistory(newStatus);
       return;
     }
-    const taskRef = ref(db, `users/${user.uid}/tasks/${id}/completed`);
+    const taskRef = ref(db, `tasks/${user.uid}/${id}/completed`);
     await set(taskRef, newStatus);
     await logHistory(newStatus);
   };

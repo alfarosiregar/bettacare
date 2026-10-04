@@ -13,7 +13,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { useDatabase } from '../context/DatabaseContext';
 import { resolveImage } from '../utils/imageResolver';
-import ImageViewing from 'react-native-image-viewing';
+import ImageViewerModal from '../components/ImageViewerModal';
 import ConfirmDeleteModal from '../components/ConfirmDeleteModal';
 import ImageModalHeader from '../components/ImageModalHeader';
 import FeatureVisualizations from '../components/FeatureVisualizations';
@@ -21,7 +21,6 @@ import AnalysisInsights, {
   OodWarningCard,
   TechnicalDetailsCard,
 } from '../components/AnalysisInsights';
-import { dataUriToTempFile } from '../utils/dataUriToTempFile';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function HistoryDetailScreen() {
@@ -32,7 +31,7 @@ export default function HistoryDetailScreen() {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   /* Zoom visualisasi ekstraksi fitur (ImageViewing). Data dari Firebase bisa
    * berisi nilai non-string (scan lama) — saring di render. */
-  const [zoomUri, setZoomUri] = useState<string | null>(null);
+  const [zoomUri, setZoomUri] = useState<string | number | null>(null);
   const insets = useSafeAreaInsets();
 
   // Find the matching item
@@ -54,15 +53,9 @@ export default function HistoryDetailScreen() {
   const imageSource = resolveImage(item.image);
   const features = item.features;
 
-  /* Zoom foto utama riwayat. Gambar riwayat tersimpan sebagai data URI
-   * (thumbnail base64) yang TIDAK bisa dimuat Image.getSize native saat zoom
-   * → konversi ke file cache dulu (lihat dataUriToTempFile). */
-  const openMainImageZoom = async () => {
-    try {
-      setZoomUri(await dataUriToTempFile(String(item.image ?? '')));
-    } catch {
-      setZoomUri(String(item.image ?? ''));
-    }
+  /* Zoom foto utama riwayat */
+  const openMainImageZoom = () => {
+    setZoomUri(item.image ?? null);
   };
 
   return (
@@ -88,10 +81,8 @@ export default function HistoryDetailScreen() {
           </View>
         </Pressable>
 
-        {/* Modal zoom visualisasi & foto utama — satu modal bersama.
-         * Header close eksplisit: default header “X” library ini sering
-         * tidak terlihat/tidak responsif di Android. */}
-        <ImageViewing
+        {/* Modal zoom visualisasi & foto utama */}
+        <ImageViewerModal
           images={zoomUri ? [{ uri: zoomUri }] : []}
           imageIndex={0}
           visible={!!zoomUri}

@@ -15,12 +15,13 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { getLastCapture } from '../utils/capture-store';
 import { useDatabase } from '../context/DatabaseContext';
+import { formatHistoryDate } from '../utils/dateUtils';
 import FeatureVisualizations from '../components/FeatureVisualizations';
 import AnalysisInsights, {
   OodWarningCard,
   TechnicalDetailsCard,
 } from '../components/AnalysisInsights';
-import ImageViewing from 'react-native-image-viewing';
+import ImageViewerModal from '../components/ImageViewerModal';
 import ImageModalHeader from '../components/ImageModalHeader';
 import Animated, {
   useSharedValue,
@@ -42,8 +43,8 @@ const API_BASE = (() => {
     const trimmed = RAW_API_URL.replace(/\/+$/, '');
     return trimmed.endsWith('/predict') ? trimmed.slice(0, -'/predict'.length) : trimmed;
   }
-  // Fallback dev tanpa env: pastikan EXPO_PUBLIC_API_URL di-set untuk build rilis!
-  return 'http://localhost:8000';
+  // Fallback default ke server VPS Biznet Gio yang selalu aktif
+  return 'http://103.89.0.244';
 })();
 const PREDICT_URL = `${API_BASE}/predict`;
 const ANALYZE_URL = `${API_BASE}/analyze_features`;
@@ -222,6 +223,7 @@ export default function ResultScreen() {
         {
           headers: {
             'Content-Type': 'application/json',
+            Connection: 'close',
           },
           timeout: 30000,
         }
@@ -245,6 +247,72 @@ export default function ResultScreen() {
     } finally {
       setAiLoading(false);
     }
+  };
+
+  /**
+   * Optimasi gambar sebelum dikirim ke backend AI:
+   * Mengompres & mengubah ukuran gambar ke resolusi ideal (lebar 1024px, JPEG q0.8).
+   * Menurunkan payload dari ~10 MB menjadi ~120-180 KB (pengurangan 98%).
+   * Mencegah "Network Error" pada Axios akibat buffer memori bridge React Native,
+   * dan mencegah "Request timeout (ECONNABORTED)" pada koneksi internet seluler.
+   */
+  const optimizeImageForAnalysis = async (
+    rawUri: string,
+    initialB64?: string
+  ): Promise<{ uri: string; base64: string }> => {
+    let sourceUri = rawUri;
+    let tempSourceCreated = false;
+
+    // Jika ada initialB64 dari capture kamera, tulis ke file cache buatan sendiri
+    // agar expo-image-manipulator dijamin 100% bisa membacanya di semua tipe Android
+    if (initialB64) {
+      try {
+        const tmpPath = `${FileSystem.cacheDirectory}opt_src_${Date.now()}.jpg`;
+        await FileSystem.writeAsStringAsync(tmpPath, initialB64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        sourceUri = tmpPath;
+        tempSourceCreated = true;
+      } catch (writeErr) {
+        console.warn('[DEBUG] Gagal menulis temp source file:', writeErr);
+        sourceUri = rawUri;
+      }
+    }
+
+    try {
+      // Resize gambar ke lebar ideal (1024px) dan kualitas JPEG 0.8
+      const manipulated = await manipulateAsync(
+        sourceUri,
+        [{ resize: { width: 1024 } }],
+        { compress: 0.8, format: SaveFormat.JPEG, base64: true }
+      );
+
+      if (manipulated.base64) {
+        return {
+          uri: manipulated.uri,
+          base64: manipulated.base64,
+        };
+      }
+    } catch (manipErr) {
+      console.warn('[DEBUG] manipulateAsync gagal, memakai gambar fallback:', manipErr);
+    } finally {
+      if (tempSourceCreated) {
+        FileSystem.deleteAsync(sourceUri, { idempotent: true }).catch(() => {});
+      }
+    }
+
+    // Fallback jika kompresi gagal
+    let fallbackB64 = initialB64;
+    if (!fallbackB64 && rawUri.startsWith('file://')) {
+      try {
+        fallbackB64 = await readLocalImageAsBase64(rawUri);
+      } catch (_) {}
+    }
+
+    return {
+      uri: rawUri,
+      base64: fallbackB64 || '',
+    };
   };
 
   /** Buat thumbnail base64 untuk riwayat (pengganti Firebase Storage).
@@ -330,19 +398,36 @@ export default function ResultScreen() {
       console.log('[DEBUG] imageUri:', imageUri);
       console.log('[DEBUG] file — name:', name, 'type:', type);
 
-      // ── Transport prediksi ──────────────────────────────────────────
-      // Transport utama: base64 via JSON (`/predict_base64`). Ini bypass
-      // bug native Android/Expo Go "Location ... isn't readable" pada
-      // uploadAsync, karena data gambar dikirim langsung dari memori.
-      // Fallback: multipart uploadAsync (untuk file dari image picker).
+      // ── Optimasi Gambar Sebelum Prediksi ──────────────────────────────
+      // Masalah: Foto kamera modern (12-48MP) berukuran 5-10MB (base64 ~10MB).
+      // Mengirim payload JSON sebesar itu memicu "Network Error" pada Axios bridge
+      // di React Native, dan multipart upload timeout di koneksi seluler.
+      // Solusi: Resize ke lebar 1024px, JPEG q0.8 → payload turun drastis menjadi ~150KB.
+      const capture = getLastCapture();
+      let initialB64: string | undefined =
+        capture?.base64 && capture?.uri === imageUri ? capture.base64 : undefined;
+      if (!initialB64 && imageUri.startsWith('file://')) {
+        try {
+          initialB64 = await readLocalImageAsBase64(imageUri);
+        } catch (_) {}
+      }
+
+      console.log('[DEBUG] Mengoptimasi gambar untuk prediksi (resize ke 1024px)...');
+      const optimized = await optimizeImageForAnalysis(imageUri, initialB64);
+      const targetUri = optimized.uri;
+      const targetB64 = optimized.base64;
+
+      // Segera tampilkan gambar hasil optimasi di UI agar tajam dan tidak blank
+      setDisplayUri(targetUri);
+
       const withTimeout = async <T,>(p: Promise<T>): Promise<T> => {
         let timer: ReturnType<typeof setTimeout> | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
-            const err: any = new Error('Request timeout');
+            const err: any = new Error('Waktu permintaan habis (timeout). Koneksi internet lambat atau server sedang sibuk.');
             err.code = 'ECONNABORTED';
             reject(err);
-          }, 45000);
+          }, 60000);
         });
         try {
           return await Promise.race([p, timeoutPromise]);
@@ -351,73 +436,75 @@ export default function ResultScreen() {
         }
       };
 
-      const runPredictBase64 = (b64: string) =>
+      const runPredictBase64 = (b64: string, timeoutMs: number = 20000) =>
         axios
           .post(
             `${API_BASE}/predict_base64`,
-            { image: b64, mime_type: type, filename: name },
-            { timeout: 45000 }
+            { image: b64, mime_type: 'image/jpeg', filename: name || 'scan.jpg' },
+            {
+              headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+                Connection: 'close',
+              },
+              timeout: timeoutMs,
+            }
           )
           .then((res) => ({ status: res.status as number, data: res.data }));
 
-      const runPredictMultipart = async (): Promise<{ status: number; data: any }> => {
-        // Gunakan FileSystem.uploadAsync — satu-satunya cara yang reliable di Expo Go
-        // PENTING: JANGAN pakai sessionType: BACKGROUND di Android/Expo Go —
-        // sesi background (WorkManager) tidak bisa membaca file cache kamera.
-        const res: any = await FileSystem.uploadAsync(PREDICT_URL, imageUri, {
+      const runPredictMultipart = async (uploadPath: string): Promise<{ status: number; data: any }> => {
+        // Normalisasi double-encoding URI di Expo Go Android (%2540 -> %40)
+        let normalizedPath = uploadPath;
+        if (normalizedPath.includes('%25')) {
+          normalizedPath = normalizedPath.replace(/%25/g, '%');
+        }
+        console.log('[DEBUG] Memulai uploadAsync file:', normalizedPath);
+        const res: any = await FileSystem.uploadAsync(PREDICT_URL, normalizedPath, {
           httpMethod: 'POST',
           uploadType: FileSystem.FileSystemUploadType.MULTIPART,
           fieldName: 'file',
-          mimeType: type,
+          mimeType: 'image/jpeg',
         });
-        console.log('[DEBUG] uploadAsync done — status:', res.status, 'body:', res.body?.slice(0, 300));
+        console.log('[DEBUG] uploadAsync selesai — status:', res.status, 'body:', res.body?.slice(0, 300));
         let json: any;
         try { json = JSON.parse(res.body); } catch { json = { error: res.body }; }
         return { status: res.status as number, data: json };
       };
 
-      // Keputusan transport base64:
-      // 1) Fast path: base64 langsung dari capture terakhir yang URI-nya cocok
-      //    dengan gambar yang ditampilkan (dari kamera maupun picker).
-      // 2) Fallback universal: baca file lokal via JS `fetch` → base64.
-      //    Ini menutup dua kegagalan sekaligus: takePictureAsync yang kadang
-      //    tidak mengembalikan base64, dan kemungkinan mismatch URI akibat
-      //    encoding router params.
-      const capture = getLastCapture();
-      let useBase64 = false;
-      let imageB64: string | undefined =
-        capture?.base64 && capture?.uri === imageUri ? capture.base64 : undefined;
-      if (imageB64) {
-        useBase64 = true;
-      } else if (imageUri.startsWith('file://')) {
-        try {
-          imageB64 = await readLocalImageAsBase64(imageUri);
-          useBase64 = true;
-          console.log('[DEBUG] base64 dibaca via JS fetch (fallback universal)');
-        } catch (readErr) {
-          console.warn('[DEBUG] gagal baca file via fetch, fallback multipart:', readErr);
-        }
-      }
-      console.log('[DEBUG] transport:', useBase64 ? 'base64 JSON (/predict_base64)' : 'multipart (/predict)');
+      const executePrediction = async (): Promise<{ status: number; data: any }> => {
+        if (targetB64) {
+          const maxRetries = 2; // Total 3x percobaan (1 awal + 2 retry) untuk toleransi fluktuasi jaringan/packet loss
+          let lastErr: any = null;
 
-      // Tampilkan gambar dari base64 yang SAMA dengan yang dianalisis
-      // (lihat komentar state displayUri). Gagal tulis → fallback diam-diam
-      // ke URI param seperti perilaku lama.
-      if (imageB64) {
-        try {
-          const viewPath = `${FileSystem.cacheDirectory}result_view_${Date.now()}.jpg`;
-          await FileSystem.writeAsStringAsync(viewPath, imageB64, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          setDisplayUri(viewPath);
-        } catch (viewErr) {
-          console.warn('[DEBUG] gagal menulis salinan gambar utk ditampilkan:', viewErr);
-        }
-      }
+          for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+            try {
+              console.log(
+                `[DEBUG] /predict_base64 attempt ${attempt}/${maxRetries + 1} (payload: ${Math.round(targetB64.length / 1024)} KB)`
+              );
+              return await runPredictBase64(targetB64, 20000);
+            } catch (err: any) {
+              lastErr = err;
+              console.warn(`[DEBUG] attempt ${attempt} gagal:`, err?.message || err?.code);
+              // Jika ini bukan percobaan terakhir, tunggu sebentar lalu coba lagi
+              if (attempt <= maxRetries) {
+                await sleep(1000);
+              }
+            }
+          }
 
-      const requestPromise = withTimeout(
-        useBase64 ? runPredictBase64(imageB64!) : runPredictMultipart()
-      ).then(({ status, data: json }) => {
+          // Jika semua percobaan base64 gagal, coba fallback multipart uploadAsync
+          console.warn('[DEBUG] Semua percobaan base64 gagal, mencoba fallback multipart uploadAsync...');
+          try {
+            return await runPredictMultipart(targetUri);
+          } catch (multipartErr) {
+            throw lastErr || multipartErr;
+          }
+        }
+        console.log('[DEBUG] transport: multipart uploadAsync (/predict)');
+        return await runPredictMultipart(targetUri);
+      };
+
+      const requestPromise = withTimeout(executePrediction()).then(({ status, data: json }) => {
         console.log('[DEBUG] predict done — status:', status);
         if (status < 200 || status >= 300) {
           const err: any = new Error(`HTTP ${status}`);
@@ -461,10 +548,13 @@ export default function ResultScreen() {
       // Simpan ke riwayat. Upload Storage dijalankan paralel; kegagalan
       // penyimpanan riwayat TIDAK menggagalkan tampilan hasil prediksi.
       try {
-        const persistedUri = await persistImage(imageUri, imageB64);
+        const now = new Date();
+        const isoString = now.toISOString();
+        const persistedUri = await persistImage(targetUri, targetB64);
         const historyItem: any = {
           title: 'Hasil Scan Kamera',
-          date: 'Hari ini', // Utils chart menangani 'Hari ini'
+          date: formatHistoryDate(isoString),
+          createdAt: isoString,
           result: data.result,
           image: persistedUri,
           confidence: Math.round(data.confidence || 0),
@@ -591,10 +681,16 @@ export default function ResultScreen() {
       >
         {/* Image */}
         <FadeIn delay={0}>
-          <Image
-            source={displayUri ? { uri: displayUri } : { uri: uri as string }}
-            style={[styles.image, { borderColor: colors.border }]}
-          />
+          <Pressable onPress={() => setZoomUri(displayUri || (uri as string))}>
+            <Image
+              source={displayUri ? { uri: displayUri } : { uri: uri as string }}
+              style={[styles.image, { borderColor: colors.border }]}
+              resizeMode="cover"
+            />
+            <View style={[styles.zoomHint, { backgroundColor: 'rgba(0,0,0,0.5)' }]}>
+              <MaterialCommunityIcons name="magnify" size={20} color="#FFF" />
+            </View>
+          </Pressable>
         </FadeIn>
 
         {/* Peringatan domain shift — membingkai seluruh hasil di bawahnya */}
@@ -747,7 +843,7 @@ export default function ResultScreen() {
         </FadeIn>
       </ScrollView>
 
-      <ImageViewing
+      <ImageViewerModal
         images={zoomUri ? [{ uri: zoomUri }] : []}
         imageIndex={0}
         visible={!!zoomUri}
@@ -938,5 +1034,15 @@ const styles = StyleSheet.create({
   secondaryButtonText: {
     fontFamily: 'Inter_600SemiBold',
     fontSize: 14,
+  },
+  zoomHint: {
+    position: 'absolute',
+    bottom: 36,
+    right: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });

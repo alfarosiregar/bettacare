@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import ImageViewing from 'react-native-image-viewing';
+import ImageViewerModal from '../../components/ImageViewerModal';
 import { View, Text, StyleSheet, Pressable, ScrollView, Image, Modal } from 'react-native';
 import { useDatabase } from '../../context/DatabaseContext';
 import { useAuth } from '../../context/AuthContext';
@@ -63,7 +63,7 @@ export default function ProfileScreen() {
                   </View>
                 </Pressable>
 
-                <ImageViewing
+                <ImageViewerModal
                   images={[{ uri: user.photoURL }]}
                   imageIndex={0}
                   visible={isImageViewVisible}
@@ -76,12 +76,12 @@ export default function ProfileScreen() {
             ) : (
               <View style={[styles.avatar, { backgroundColor: colors.primaryMuted }]}>
                 <Text style={[styles.avatarText, { color: colors.primary }]}>
-                  {user?.name?.charAt(0).toUpperCase() || 'U'}
+                  {(user?.username || user?.name || 'U').charAt(0).toUpperCase()}
                 </Text>
               </View>
             )}
             <Text style={[styles.name, { color: colors.text }]}>{user?.fullname || 'Pengguna'}</Text>
-            <Text style={[styles.email, { color: colors.textMuted }]}>@{user?.name || 'username'}</Text>
+            <Text style={[styles.email, { color: colors.textMuted }]}>@{user?.username || user?.name || 'username'}</Text>
           </View>
         </FadeInView>
 

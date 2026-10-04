@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { View, Text, StyleSheet, Image, Pressable } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { FeatureAnalysis } from '../types/domain';
-import { dataUriToTempFile } from '../utils/dataUriToTempFile';
 
 /**
  * Visualisasi proses ekstraksi fitur (RGB + GLCM) untuk kebutuhan skripsi.
@@ -37,23 +36,9 @@ const VisualizationTile = ({
   onZoom?: (uri: string) => void;
   aspectRatio?: number;
 }) => {
-  const [preparing, setPreparing] = useState(false);
-
-  const handlePress = async () => {
-    if (!onZoom || preparing) return;
-    setPreparing(true);
-    try {
-      // Data URI GAGAL di-zoom lewat react-native-image-viewing (Image.getSize
-      // native tidak bisa memuat data URI di Android/Expo Go → dimensi 0x0).
-      // Konversi ke file cache agar loader native bisa membacanya.
-      const zoomableUri = await dataUriToTempFile(uri);
-      onZoom(zoomableUri);
-    } catch {
-      // Gagal menulis file → coba saja URI asli (fallback).
-      onZoom(uri);
-    } finally {
-      setPreparing(false);
-    }
+  const handlePress = () => {
+    if (!onZoom) return;
+    onZoom(uri);
   };
 
   return (

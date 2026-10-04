@@ -84,6 +84,8 @@ export default function LoginScreen() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [errorPopupVisible, setErrorPopupVisible] = useState(false);
+  const [successPopupVisible, setSuccessPopupVisible] = useState(false);
+  const [registeredUsername, setRegisteredUsername] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [resetPopupVisible, setResetPopupVisible] = useState(false);
@@ -111,39 +113,51 @@ export default function LoginScreen() {
 
   const handleSubmit = async () => {
     if (isLoginMode) {
-      if (!username) {
-        setErrorMsg("Username/Email tidak boleh kosong");
+      if (!username.trim()) {
+        setErrorMsg("Username atau Email tidak boleh kosong");
         setErrorPopupVisible(true);
         return;
       }
       if (!password) {
-        setErrorMsg("Password tidak boleh kosong");
+        setErrorMsg("Kata sandi tidak boleh kosong");
         setErrorPopupVisible(true);
         return;
       }
     } else {
-      if (!firstname) {
+      if (!firstname.trim()) {
         setErrorMsg("Nama Depan tidak boleh kosong");
         setErrorPopupVisible(true);
         return;
       }
-      if (!username) {
+      if (!username.trim()) {
         setErrorMsg("Username tidak boleh kosong");
         setErrorPopupVisible(true);
         return;
       }
-      if (!email) {
+      if (!email.trim()) {
         setErrorMsg("Email tidak boleh kosong");
         setErrorPopupVisible(true);
         return;
       }
+      if (!email.includes('@') || !email.includes('.')) {
+        setErrorMsg("Format email tidak valid (contoh: nama@email.com)");
+        setErrorPopupVisible(true);
+        return;
+      }
       if (!password) {
-        setErrorMsg("Password tidak boleh kosong");
+        setErrorMsg("Kata sandi tidak boleh kosong");
+        setErrorPopupVisible(true);
+        return;
+      }
+      if (password.length < 6) {
+        setErrorMsg("Kata sandi minimal 6 karakter");
         setErrorPopupVisible(true);
         return;
       }
       if (password !== confirmPassword) {
-        return; // Hentikan proses, tidak usah tampilkan popup, animasi sudah muncul di bawah input
+        setErrorMsg("Konfirmasi kata sandi tidak cocok");
+        setErrorPopupVisible(true);
+        return;
       }
     }
 
@@ -151,25 +165,50 @@ export default function LoginScreen() {
       setIsSubmitting(true);
       let result;
       if (isLoginMode) {
-        const emailToUse = username.includes('@') 
-          ? username 
-          : `${username.toLowerCase().replace(/\s+/g, '_')}@bettacare.local`;
-        result = await login(emailToUse, password);
+        result = await login(username.trim().toLowerCase(), password);
+        if (result) {
+          setErrorMsg(result);
+          setErrorPopupVisible(true);
+        }
       } else {
-        result = await register(firstname, lastname, username, email, password);
-      }
-
-      if (result) {
-        setErrorMsg(result);
-        setErrorPopupVisible(true);
+        const regUsername = username.trim();
+        result = await register(
+          firstname.trim(),
+          lastname.trim(),
+          regUsername,
+          email.trim().toLowerCase(),
+          password
+        );
+        if (result) {
+          setErrorMsg(result);
+          setErrorPopupVisible(true);
+        } else {
+          setRegisteredUsername(regUsername);
+          setSuccessPopupVisible(true);
+        }
       }
     } finally {
       setIsSubmitting(false);
     }
   };
 
+  const handleSuccessClose = () => {
+    setSuccessPopupVisible(false);
+    setIsLoginMode(true);
+    if (registeredUsername) {
+      setUsername(registeredUsername);
+    }
+    setPassword('');
+    setConfirmPassword('');
+    setFirstname('');
+    setLastname('');
+    setEmail('');
+    setErrorMsg('');
+  };
+
   const toggleMode = () => {
     setIsLoginMode(!isLoginMode);
+    setErrorMsg('');
   };
 
   const handleResetPassword = async () => {
@@ -273,14 +312,20 @@ export default function LoginScreen() {
           )}
 
           <View style={[styles.inputContainer, { backgroundColor: 'transparent', borderColor: colors.border }]}>
-            <MaterialCommunityIcons name="account-outline" size={20} color={colors.textMuted} style={styles.inputIcon} />
+            <MaterialCommunityIcons 
+              name="account-outline" 
+              size={20} 
+              color={colors.textMuted} 
+              style={styles.inputIcon} 
+            />
             <TextInput
               style={[styles.input, { color: colors.text }]}
-              placeholder={isLoginMode ? "Username / Email" : "Username"}
+              placeholder={isLoginMode ? "Username atau Email" : "Username"}
               placeholderTextColor={colors.textMuted}
               value={username}
               onChangeText={setUsername}
               autoCapitalize="none"
+              keyboardType="default"
             />
           </View>
 
@@ -452,6 +497,35 @@ export default function LoginScreen() {
               style={[styles.modalBtn, { backgroundColor: '#F9423A', width: '100%' }]}
             >
               <Text style={[styles.modalBtnText, { color: '#FFF' }]}>Coba Lagi</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Register Success Popup */}
+      <Modal
+        visible={successPopupVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={handleSuccessClose}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: colorScheme === 'dark' ? '#1E293B' : colors.card }]}>
+            <View style={[styles.modalIconContainer, { backgroundColor: 'rgba(16, 185, 129, 0.15)', width: 80, height: 80, borderRadius: 40, justifyContent: 'center', alignItems: 'center' }]}>
+              <Ionicons name="checkmark-circle" size={56} color="#10B981" />
+            </View>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              Pendaftaran Berhasil!
+            </Text>
+            <Text style={[styles.modalMessage, { color: colors.textMuted }]}>
+              Akun Anda telah berhasil dibuat. Silakan masuk menggunakan username atau email dan kata sandi Anda.
+            </Text>
+            
+            <Pressable 
+              onPress={handleSuccessClose} 
+              style={[styles.modalBtn, { backgroundColor: colors.primary, width: '100%' }]}
+            >
+              <Text style={[styles.modalBtnText, { color: '#FFF' }]}>Masuk Sekarang</Text>
             </Pressable>
           </View>
         </View>
